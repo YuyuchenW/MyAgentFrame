@@ -32,6 +32,12 @@ pip-wheel-metadata/
 *.pid
 *.sqlite
 *.sqlite3
+memory/
+tool-output/
+
+# Generated document outputs
+*.doc
+*.docx
 
 # Jupyter
 .ipynb_checkpoints/
@@ -43,5 +49,4 @@ pip-wheel-metadata/
 *.swo
 .DS_Store
 Thumbs.db
-
 
