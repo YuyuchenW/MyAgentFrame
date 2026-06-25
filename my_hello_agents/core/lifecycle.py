@@ -15,7 +15,7 @@ import time
 class AgentEventType(str,Enum):
     # Agent级别事件
     AGENT_START = "agent_start"
-    AGENT_Finish = "agent_finish"
+    AGENT_FINISH  = "agent_finish"
     AGENT_ERROR = "agent_error"
     AGENT_CANCEL = "agent_cancel"
     
@@ -38,7 +38,7 @@ class AgentEventType(str,Enum):
     THINKING = "thinking"           # 推理过程
     REFLECTION = "reflection"       # 反思过程
     PLAN = "plan"                   # 计划生成
-    
+EventType = AgentEventType
 @dataclass
 class AgentEvent:
     """Agent 生命周期事件
