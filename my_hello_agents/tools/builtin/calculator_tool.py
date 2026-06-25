@@ -27,22 +27,21 @@ class CalculatorTool(Tool):
         ast.UAdd: operator.pos,
         ast.USub: operator.neg,
     }
-    
+
     FUNCTIONS = {
-        'abs': abs,
-        'round': round,
-        'max': max,
-        'min': min,
-        'sum': sum,
-        'sqrt': math.sqrt,
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'log': math.log,
-        'exp': math.exp,
-        'pi': math.pi,
-        'e': math.e,
+        "abs": abs,
+        "round": round,
+        "max": max,
+        "min": min,
+        "sqrt": math.sqrt,
+        "sin": math.sin,
+        "cos": math.cos,
+        "tan": math.tan,
+        "log": math.log,
+        "exp": math.exp,
     }
+
+    CONSTANTS = {"pi": math.pi, "e": math.e}
 
     def __init__(
         self,
@@ -54,7 +53,8 @@ class CalculatorTool(Tool):
             name="calculator",
             description=(
                 "Evaluate a basic arithmetic expression. Supports +, -, *, /, "
-                "//, %, **, parentheses, and unary signs."
+                "//, %, **, parentheses, and unary signs"
+                ", including sqrt(16) and sin(pi / 2)."
             ),
         )
         self.max_expression_length = max_expression_length
@@ -117,22 +117,17 @@ class CalculatorTool(Tool):
     def _evaluate(self, node: ast.AST) -> Any:
         """Recursively evaluate an allowed AST node."""
         if isinstance(node, ast.Constant):
-            if isinstance(node.value, bool) or not isinstance(
-                node.value,
-                (int, float),
+            if isinstance(node.value, (int, float)) and not isinstance(
+                node.value, bool
             ):
-                raise ValueError(
-                    "only integer and floating-point constants are allowed"
-                )
-            return node.value
+                return node.value
+            raise ValueError(f"constant {node.value} is not allowed")
 
         if isinstance(node, ast.BinOp):
             operator_type = type(node.op)
             operation = self.BINARY_OPERATORS.get(operator_type)
             if operation is None:
-                raise ValueError(
-                    f"operator {operator_type.__name__} is not allowed"
-                )
+                raise ValueError(f"operator {operator_type.__name__} is not allowed")
 
             left = self._evaluate(node.left)
             right = self._evaluate(node.right)
@@ -146,14 +141,27 @@ class CalculatorTool(Tool):
         if isinstance(node, ast.UnaryOp):
             operation = self.UNARY_OPERATORS.get(type(node.op))
             if operation is None:
-                raise ValueError(
-                    f"operator {type(node.op).__name__} is not allowed"
-                )
+                raise ValueError(f"operator {type(node.op).__name__} is not allowed")
             return operation(self._evaluate(node.operand))
 
-        raise ValueError(
-            f"expression element {type(node).__name__} is not allowed"
-        )
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                raise ValueError("attribute function calls are not allowed")
+            if node.keywords:
+                raise ValueError("keyword arguments are not allowed")
+            func_name = node.func.id
+            if func_name in self.FUNCTIONS:
+                args = [self._evaluate(arg) for arg in node.args]
+                return self.FUNCTIONS[func_name](*args)
+            else:
+                raise ValueError(f"function: {func_name} is not allowed")
+
+        if isinstance(node, ast.Name):
+            if node.id in self.CONSTANTS:
+                return self.CONSTANTS[node.id]
+            else:
+                raise ValueError(f"constants : {node.id} is not allowed")
+        raise ValueError(f"expression element {type(node).__name__} is not allowed")
 
     def _validate_result(self, result: Any) -> None:
         """Reject non-real, non-finite, or excessively large results."""
@@ -162,9 +170,7 @@ class CalculatorTool(Tool):
         if isinstance(result, float) and not math.isfinite(result):
             raise ValueError("result must be finite")
         if abs(result) > self.max_absolute_result:
-            raise ValueError(
-                f"absolute result exceeds {self.max_absolute_result:g}"
-            )
+            raise ValueError(f"absolute result exceeds {self.max_absolute_result:g}")
 
 
 def register_calculator_tool(registry: ToolRegistry) -> CalculatorTool:
