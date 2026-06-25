@@ -931,6 +931,27 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
     """返回 OpenAI function-calling 格式的工具 schema 列表。"""
     return [v["schema"] for v in DOCX_TOOLS.values()]
 
+# TODO 后续删除
+def register_docx_tools(registry) -> None:
+    """Register all docx functions in a ToolRegistry."""
+    for item in DOCX_TOOLS.values():
+        function_schema = item["schema"]["function"]
+        registry.register_schema_function(
+            name=function_schema["name"],
+            description=function_schema["description"],
+            parameters=function_schema["parameters"],
+            func=item["run"],
+        )
+
+
+def create_docx_tool_registry(circuit_breaker=None):
+    """Create a ToolRegistry preloaded with all docx tools."""
+    from my_hello_agents.tools.registry import ToolRegistry
+
+    registry = ToolRegistry(circuit_breaker=circuit_breaker)
+    register_docx_tools(registry)
+    return registry
+
 
 def run_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """按名字执行某个工具，返回结果 dict（出错时带 ok=False/error）。"""
