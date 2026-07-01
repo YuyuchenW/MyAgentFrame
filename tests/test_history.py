@@ -18,6 +18,17 @@ class FakeLLM:
 
 
 class HistoryManagerTest(unittest.TestCase):
+    def test_get_history_returns_a_shallow_list_copy(self):
+        history = HistoryManager()
+        message = Message("hello", "user")
+        history.append(message)
+
+        snapshot = history.get_history()
+
+        self.assertIs(snapshot[0], message)
+        snapshot.clear()
+        self.assertEqual(history.get_history(), [message])
+
     def test_history_without_llm_appends_rounds_and_serializes(self):
         history = HistoryManager(min_retain_rounds=2)
 

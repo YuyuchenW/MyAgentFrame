@@ -67,7 +67,7 @@ class HistoryManager:
         Returns:
             List[Message]: 历史消息副本
         """
-        return self._history
+        return list(self._history)
     
     def clear(self) ->None:
         """清空历史"""

@@ -1,5 +1,8 @@
 import json
+import io
+from typing import List
 import unittest
+from contextlib import redirect_stdout
 
 from my_hello_agents.tools import (
     CustomFilter,
@@ -11,6 +14,7 @@ from my_hello_agents.tools import (
     ToolRegistry,
     ToolResponse,
     ToolStatus,
+    CircuitBreaker,
     create_docx_tool_registry,
     tool_action,
 )
@@ -39,6 +43,61 @@ class AddTool(Tool):
         return ToolResponse.success(
             text=str(result),
             data={"result": result},
+        )
+
+class AlwaysFailTool(Tool):
+    def __init__(self):
+        super().__init__("always_fail", "Always fail")
+
+    def get_parameters(self):
+        return []
+
+    def run(self, parameters):
+        return ToolResponse.error(
+            code=ToolErrorCode.EXECUTION_ERROR,
+            message="boom",
+        )
+
+
+class RepeatTextTool(Tool):
+    def __init__(self):
+        super().__init__("repeat_text", "repeat text")
+
+    def get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="text", type="string", description="input string", required=True
+            ),
+            ToolParameter(
+                name="times",
+                type="integer",
+                description="repeat times",
+                required=False,
+                default=2,
+            ),
+        ]
+
+    def run(self, parameters):
+        text = parameters.get("text")
+        if not isinstance(text, str):
+            return ToolResponse.error(
+                code=ToolErrorCode.INVALID_PARAM, message="input text is not allowed"
+            )
+
+        times: int = parameters.get("times", 2)
+        if not isinstance(times, int)  or isinstance(times, bool):
+                return ToolResponse.error(
+                    code=ToolErrorCode.INVALID_PARAM,
+                    message="bool types is not allowed",
+                )
+        result = text * times
+        if times > 0 and times < 6:
+            return ToolResponse.success(
+                text=result, data={"result": result, "times": times}
+            )
+        return ToolResponse.error(
+            code=ToolErrorCode.INVALID_PARAM,
+            message=f" times : {times} is not in range(1,5)",
         )
 
 
@@ -138,6 +197,87 @@ class ToolBaseTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, ToolStatus.SUCCESS)
         self.assertEqual(response.data, {"result": 9})
+
+    def test_repeat_text_schema_and_default_value(self):
+        tool = RepeatTextTool()
+
+        schema = tool.to_openai_schema()
+        response = tool.run_with_timing({"text": "ha"})
+
+        self.assertEqual(schema["function"]["name"], "repeat_text")
+        self.assertEqual(
+            schema["function"]["parameters"]["required"],
+            ["text"],
+        )
+        self.assertIn(
+            "默认: 2",
+            schema["function"]["parameters"]["properties"]["times"]["description"],
+        )
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.text, "haha")
+        self.assertEqual(response.data, {"result": "haha", "times": 2})
+
+    def test_repeat_text_explicit_times(self):
+        response = RepeatTextTool().run_with_timing(
+            {"text": "go", "times": 3}
+        )
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data, {"result": "gogogo", "times": 3})
+
+    def test_repeat_text_rejects_invalid_text_type(self):
+        response = RepeatTextTool().run_with_timing({"text": 123})
+
+        self.assertEqual(response.status, ToolStatus.ERROR)
+        self.assertEqual(
+            response.error_info["code"],
+            ToolErrorCode.INVALID_PARAM,
+        )
+
+    def test_repeat_text_rejects_invalid_times_type(self):
+        response = RepeatTextTool().run_with_timing(
+            {"text": "ha", "times": 1.5}
+        )
+
+        self.assertEqual(response.status, ToolStatus.ERROR)
+        self.assertEqual(
+            response.error_info["code"],
+            ToolErrorCode.INVALID_PARAM,
+        )
+
+    def test_repeat_text_rejects_bool_times(self):
+        response = RepeatTextTool().run_with_timing(
+            {"text": "ha", "times": True}
+        )
+
+        self.assertEqual(response.status, ToolStatus.ERROR)
+        self.assertEqual(
+            response.error_info["code"],
+            ToolErrorCode.INVALID_PARAM,
+        )
+
+    def test_repeat_text_rejects_times_out_of_range(self):
+        response = RepeatTextTool().run_with_timing(
+            {"text": "ha", "times": 6}
+        )
+
+        self.assertEqual(response.status, ToolStatus.ERROR)
+        self.assertEqual(
+            response.error_info["code"],
+            ToolErrorCode.INVALID_PARAM,
+        )
+
+    async def test_repeat_text_async_matches_sync(self):
+        tool = RepeatTextTool()
+
+        sync_response = tool.run_with_timing({"text": "ha", "times": 2})
+        async_response = await tool.arun_with_timing(
+            {"text": "ha", "times": 2}
+        )
+
+        self.assertEqual(sync_response.status, ToolStatus.SUCCESS)
+        self.assertEqual(async_response.status, ToolStatus.SUCCESS)
+        self.assertEqual(sync_response.data, async_response.data)
 
     async def test_expandable_actions_support_sync_and_async_methods(self):
         expanded = ExpandableTextTool().get_expanded_tools()
@@ -255,6 +395,115 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(registry.get_openai_schemas()), 17)
         self.assertIn("docx_create", registry.get_tool_names())
         self.assertTrue(callable(registry.get_function("docx_create")))
+
+    def test_string_input_func(self):
+        registry = ToolRegistry()
+
+        def echo(input: str) -> str:
+            return f"echo:{input}"
+
+        registry.register_function(echo)
+        response = registry.execute_tool("echo", "hello")
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data["output"], "echo:hello")
+
+    def test_string_input_falls_back_to_single_positional_arg(self):
+        registry = ToolRegistry()
+
+        def echo(text: str) -> str:
+            return f"echo:{text}"
+
+        registry.register_function(echo)
+        response = registry.execute_tool("echo", "hello")
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data["output"], "echo:hello")
+
+    def test_invalid_json_string_is_treated_as_input(self):
+        registry = ToolRegistry()
+
+        def echo(input: str) -> str:
+            return f"echo:{input}"
+
+        registry.register_function(echo)
+        response = registry.execute_tool("echo", "{not-json")
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data["output"], "echo:{not-json")
+
+    def test_non_object_json_is_wrapped_as_input(self):
+        registry = ToolRegistry()
+
+        def double(input: int) -> int:
+            return input * 2
+
+        registry.register_function(double)
+        response = registry.execute_tool("double", "21")
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data["output"], 42)
+
+    def test_function_exception_returns_execution_error(self):
+        registry = ToolRegistry()
+
+        def explode() -> str:
+            raise RuntimeError("boom")
+
+        registry.register_function(explode)
+        response = registry.execute_tool("explode", {})
+
+        self.assertEqual(response.status, ToolStatus.ERROR)
+        self.assertEqual(
+            response.error_info["code"],
+            ToolErrorCode.EXECUTION_ERROR,
+        )
+        self.assertEqual(response.context["tool_name"], "explode")
+
+    async def test_async_function_uses_same_string_argument_parsing(self):
+        registry = ToolRegistry()
+
+        async def echo(text: str) -> str:
+            return f"async:{text}"
+
+        registry.register_function(echo)
+        response = await registry.aexecute_tool("echo", "hello")
+
+        self.assertEqual(response.status, ToolStatus.SUCCESS)
+        self.assertEqual(response.data["output"], "async:hello")
+
+    def test_registry_blocks_open_circuit_before_tool_execution(self):
+        breaker = CircuitBreaker(failure_threshold=1, recovery_timeout=10)
+        registry = ToolRegistry(circuit_breaker=breaker)
+        registry.register_tool(AlwaysFailTool())
+
+        with redirect_stdout(io.StringIO()):
+            first = registry.execute_tool("always_fail", {})
+        second = registry.execute_tool("always_fail", {})
+
+        self.assertEqual(first.error_info["code"], ToolErrorCode.EXECUTION_ERROR)
+        self.assertEqual(second.error_info["code"], ToolErrorCode.CIRCUIT_OPEN)
+
+class ToolFilterTest(unittest.TestCase):
+    def test_tool_filter(self):
+        read_filter = ReadOnlyFilter(additional_allowed=["Custom"])
+        self.assertTrue(read_filter.is_allowed("Read"))
+        self.assertTrue(read_filter.is_allowed("Custom"))
+        self.assertFalse(read_filter.is_allowed("Bash"))
+
+        full_access_filter = FullAccessFilter(additional_denied=["Delete"])
+        self.assertFalse(full_access_filter.is_allowed("Bash"))
+        self.assertFalse(full_access_filter.is_allowed("Delete"))
+        self.assertTrue(full_access_filter.is_allowed("Read"))
+
+        custom_filter = CustomFilter(denied=["Delete"], mode="blacklist")
+        self.assertEqual(
+            custom_filter.filter(["Read", "Delete", "Write"]),
+            ["Read", "Write"],
+        )
+
+        with self.assertRaises(ValueError):
+            CustomFilter(mode="unknown")
 
 
 if __name__ == "__main__":
